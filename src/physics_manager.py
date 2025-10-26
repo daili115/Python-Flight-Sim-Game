@@ -1,6 +1,7 @@
 import pybullet as p
 import pybullet_data
 from panda3d.core import LVector3, LPoint3, LQuaternion, NodePath
+import math
 
 class PhysicsManager:
     def __init__(self, base):
@@ -26,16 +27,13 @@ class PhysicsManager:
         # Current state
         self.velocity = LVector3(0, 0, 0)
         
-        # Import math functions from pybullet
-        import math as p
         self.angular_velocity = LVector3(0, 0, 0)
         self.thrust = 0.0
         self.control_inputs = {'aileron': 0.0, 'elevator': 0.0, 'rudder': 0.0, 'throttle': 0.0}
 
-    def load_aircraft(self, model_path: str, initial_pos: LPoint3, initial_hpr: LVector3):
-        # Load the visual model into Panda3D
-        self.aircraft_np = self.base.loader.loadModel(model_path)
-        self.aircraft_np.reparentTo(self.base.render)
+    def load_aircraft(self, aircraft_np: NodePath, model_path: str, initial_pos: LPoint3, initial_hpr: LVector3):
+        # Set the aircraft NodePath
+        self.aircraft_np = aircraft_np
         self.aircraft_np.setPos(initial_pos)
         self.aircraft_np.setHpr(initial_hpr)
 
@@ -101,77 +99,52 @@ class PhysicsManager:
         # Airspeed (magnitude of velocity)
         airspeed = self.velocity.length()
         
+        # Initialize forces to zero
+        lift_force = LVector3(0, 0, 0)
+        drag_force = LVector3(0, 0, 0)
+
         # Angle of Attack (AoA) calculation (simplified: angle between velocity vector and forward vector)
         if airspeed > 1.0:
+            # Dynamic Pressure (Q) - moved up for efficiency
+            Q = 0.5 * self.RHO * airspeed**2
+
             vel_norm = self.velocity.normalized()
+
             # 2. Calculate Angle of Attack (AoA)
-            # AoA is the angle between the velocity vector and the aircraft's longitudinal axis (body Y-axis)
-            # Find velocity vector in the aircraft's body frame
             vel_body = quat.conjugate().xform(self.velocity)
+            aoa_rad = math.atan2(vel_body.z, vel_body.y)
+            aoa_deg = math.degrees(aoa_rad)
             
-            # Calculate AoA (angle between vel_body's projection on YZ plane and Y-axis)
-            # atan2(Z component, Y component)
-            aoa_rad = -p.atan2(vel_body.z, vel_body.y) # Negative sign because positive Z is down in PyBullet's default setup, but Panda3D's Z is up. Let's stick to Panda3D's Z-up convention.
-            # Wait, PyBullet is Z-up by default. Let's ensure consistency.
-            # Panda3D: Y is forward, Z is up, X is right.
-            # PyBullet: Z is up, X is forward, Y is left (by default, but we are using Panda3D's convention of Y forward).
-            # If we assume Panda3D's coordinate system (Y-forward, Z-up, X-right) is used for the model:
-            
-            # AoA is the angle between the velocity vector and the body Y-axis (forward)
-            aoa_rad = p.atan2(vel_body.z, vel_body.y) # Angle in YZ plane
-            
-            # Convert to degrees for easier parameterization
-            aoa_deg = p.degrees(aoa_rad)
-            
-            # 3. Lift and Drag Coefficient Calculation (Simplified for demonstration)
-            
-            # Lift Coefficient (CL) - Simplified stall model
-            # Max CL at 15 degrees (stall angle)
+            # 3. Lift and Drag Coefficient Calculation
             stall_angle = 15.0
             
             if abs(aoa_deg) < stall_angle:
-                # Linear lift before stall
                 CL = self.cl_max * (aoa_deg / stall_angle)
             else:
-                # Post-stall: lift drops off sharply
                 sign = 1 if aoa_deg > 0 else -1
-                CL = sign * (self.cl_max * 0.8 * p.cos(aoa_rad)) # Simple drop-off
+                CL = sign * (self.cl_max * 0.8 * math.cos(aoa_rad))
             
-            # Drag Coefficient (CD) - Induced drag + parasite drag
-            CD = self.cd_min + 0.05 * CL**2 # Induced drag component (K*CL^2)
-
-            # Add control surface deflection effect to CL
-            # Elevator (Pitch control) primarily affects AoA/CL
-            CL += self.control_inputs['elevator'] * 0.5 # 0.5 is a control effectiveness factor
-
-            # Dynamic Pressure (Q)
-            Q = 0.5 * self.RHO * airspeed**2
+            CL += self.control_inputs['elevator'] * 0.5
+            CD = self.cd_min + 0.05 * CL**2
 
             # 4. Lift Force
             lift_magnitude = Q * self.wing_area * CL
-            
-            # Lift Direction: Perpendicular to the velocity vector, in the plane of the wings.
-            # In the body frame, lift is along the Z-axis (up). In the wind frame, it's perpendicular to velocity.
-            # We apply force in the **wind frame**: Lift is perpendicular to velocity, Drag is parallel to velocity.
-            
-            # Calculate the lift direction vector (perpendicular to velocity, in the plane of symmetry)
-            # Cross product of velocity and the wing span vector (body X-axis)
-            wing_span_vec = quat.xform(LVector3(1, 0, 0)) # Body X-axis in world space
+            wing_span_vec = quat.xform(LVector3(1, 0, 0))
             lift_direction = (self.velocity.cross(wing_span_vec)).normalized()
             lift_force = lift_direction * lift_magnitude
             
-            # 5. Drag Force (opposite to velocity vector)
+            # 5. Drag Force
             drag_magnitude = Q * self.wing_area * CD
             drag_force = -vel_norm * drag_magnitude
 
-        # 3. Thrust Force (along the forward vector)
-        self.thrust = self.control_inputs['throttle'] * self.engine_power # Throttle is 0 to 1
+        # 6. Thrust Force
+        self.thrust = self.control_inputs['throttle'] * self.engine_power
         thrust_force = forward_vec * self.thrust
 
-        # 4. Gravity Force (constant downwards force)
+        # 7. Gravity Force
         gravity_force = LVector3(0, 0, -9.81 * self.mass)
 
-        # 5. Total Force
+        # 8. Total Force
         total_force = gravity_force + thrust_force + lift_force + drag_force
         
         # 6. Apply force and torque to PyBullet
@@ -187,57 +160,36 @@ class PhysicsManager:
         # 7. Apply Control Torques (Aerodynamic Moments)
         # Torques are generated by control surfaces (aileron, elevator, rudder)
         # They are proportional to dynamic pressure (Q) and control input.
-        
-        # Dynamic Pressure (Q) - calculated earlier
-        Q = 0.5 * self.RHO * airspeed**2
-        
-        # Simplified Moment Coefficients (Cm)
-        # Assuming a reference area (wing_area) and a reference length (e.g., wing chord, fuselage length)
-        ref_length = 5.0 # meters
-        
-        # Pitch Moment (around body X-axis) - primarily controlled by Elevator
-        # Cm_pitch = Cm_0 + Cm_alpha * AoA + Cm_elevator * Elevator
-        # For simplicity, we only use the control input for the moment
-        Cm_pitch = self.control_inputs['elevator'] * 0.1 # 0.1 is a moment coefficient factor
-        
-        # Roll Moment (around body Y-axis) - primarily controlled by Aileron
-        Cm_roll = self.control_inputs['aileron'] * 0.05
-        
-        # Yaw Moment (around body Z-axis) - primarily controlled by Rudder
-        Cm_yaw = self.control_inputs['rudder'] * 0.03
-        
-        # Torque Magnitude = Q * WingArea * RefLength * Cm
-        pitch_torque_mag = Q * self.wing_area * ref_length * Cm_pitch
-        roll_torque_mag = Q * self.wing_area * ref_length * Cm_roll
-        yaw_torque_mag = Q * self.wing_area * ref_length * Cm_yaw
-        
-        # Torques are applied in the *body frame* (relative to the aircraft's orientation)
-        # Panda3D Body Frame: X-Right, Y-Forward, Z-Up
-        body_torque = LVector3(
-            roll_torque_mag,    # Roll around Y (Pitch) - WRONG. Roll is around Y in Panda3D's default frame, but around X in aircraft body frame
-            -pitch_torque_mag,  # Pitch around X (Roll) - WRONG. Pitch is around X in Panda3D's default frame, but around Y in aircraft body frame
-            yaw_torque_mag      # Yaw around Z
-        )
-        
-        # Correct Body Frame (X-Right, Y-Forward, Z-Up)
-        # Roll: around Y (Panda3D) / around X (Aircraft) -> Let's use Aircraft convention: X-Roll, Y-Pitch, Z-Yaw
-        # Torque Vector: (Roll_X, Pitch_Y, Yaw_Z)
-        
-        body_torque = LVector3(
-            roll_torque_mag,
-            -pitch_torque_mag, # Negative for nose up (positive elevator input)
-            yaw_torque_mag
-        )
-        
-        # Convert body torque to world torque
-        world_torque = quat.xform(body_torque)
+        if airspeed > 1.0:
+            Q = 0.5 * self.RHO * airspeed**2
+            ref_length = 5.0 # meters (Placeholder for chord length/some reference length)
 
-        p.applyExternalTorque(
-            self.aircraft_id,
-            -1,
-            [world_torque.x, world_torque.y, world_torque.z],
-            p.WORLD_FRAME
-        )
+            # Simplified Moment Coefficients
+            Cm_pitch = self.control_inputs['elevator'] * 0.1
+            Cm_roll = self.control_inputs['aileron'] * 0.05
+            Cm_yaw = self.control_inputs['rudder'] * 0.03
+        
+            # Torque Magnitude
+            pitch_torque_mag = Q * self.wing_area * ref_length * Cm_pitch
+            roll_torque_mag = Q * self.wing_area * ref_length * Cm_roll
+            yaw_torque_mag = Q * self.wing_area * ref_length * Cm_yaw
+
+            # Body Frame Torque Vector (X-Roll, Y-Pitch, Z-Yaw)
+            body_torque = LVector3(
+                roll_torque_mag,
+                -pitch_torque_mag, # Negative for nose up
+                yaw_torque_mag
+            )
+
+            # Convert body torque to world torque
+            world_torque = quat.xform(body_torque)
+
+            p.applyExternalTorque(
+                self.aircraft_id,
+                -1,
+                [world_torque.x, world_torque.y, world_torque.z],
+                p.WORLD_FRAME
+            )
 
     def update_controls(self, inputs: dict):
         """

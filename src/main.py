@@ -29,37 +29,35 @@ class FlightSim(ShowBase):
         # Initialize Game Manager
         self.game_mgr = GameManager(self, self.physics_mgr)
         
-        # Load the placeholder aircraft model
-        aircraft_model_path = "models/aircraft/aircraft.obj" # Using the placeholder path
+        # Load the placeholder aircraft model with LOD
+        from panda3d.core import LODNode
         
-        # LOD (Level of Detail) System implementation example
-        # In a real scenario, the model would be loaded into an LODNode
-        # from panda3d.core import LODNode
-        # self.aircraft_lod = LODNode('aircraft_lod')
-        # self.aircraft_lod_np = self.render.attachNewNode(self.aircraft_lod)
-        # self.aircraft_lod.addSwitch(100, 0) # Switch to high detail when closer than 100 units
-        # self.aircraft_lod.addSwitch(500, 100) # Switch to medium detail when closer than 500 units
-        # self.aircraft_lod.addSwitch(10000, 500) # Switch to low detail when closer than 10000 units
-        # self.aircraft_lod.addSwitch(0, 10000) # Culling when further than 10000 units
-        # high_detail_model = self.loader.loadModel("models/aircraft/high_poly.egg")
-        # medium_detail_model = self.loader.loadModel("models/aircraft/med_poly.egg")
-        # low_detail_model = self.loader.loadModel("models/aircraft/low_poly.egg")
-        # high_detail_model.reparentTo(self.aircraft_lod_np)
-        # medium_detail_model.reparentTo(self.aircraft_lod_np)
-        # low_detail_model.reparentTo(self.aircraft_lod_np)
-        # self.aircraft_lod.setCenter(self.aircraft_lod_np) # LOD calculation center
+        lod_node = LODNode('aircraft_lod')
+        lod_np = self.render.attachNewNode(lod_node)
+
+        # Define distances for LOD switching
+        lod_node.addSwitch(100, 0)    # High detail up to 100 units
+        lod_node.addSwitch(500, 100)   # Medium detail from 100 to 500 units
+        lod_node.addSwitch(2000, 500)  # Low detail from 500 to 2000 units
+
+        # Load models for each LOD level
+        high_model = self.loader.loadModel("models/aircraft/aircraft_high.obj")
+        med_model = self.loader.loadModel("models/aircraft/aircraft_med.obj")
+        low_model = self.loader.loadModel("models/aircraft/aircraft_low.obj")
+
+        # Attach models to the LOD node path
+        high_model.reparentTo(lod_np)
+        med_model.reparentTo(lod_np)
+        low_model.reparentTo(lod_np)
+
+        # The physics body will use the medium-detail model's path for simplicity
+        aircraft_model_path = "models/aircraft/aircraft_med.obj"
         
-        # For now, we continue to use the single placeholder model for the physics body
-        # and rely on Panda3D's native frustum culling.
         initial_pos = LPoint3(0, 0, 100) # Start high in the air
         initial_hpr = LVector3(0, 0, 0) # Heading, Pitch, Roll
         
-        # Check if the placeholder model exists, otherwise use Panda3D's default 'box'
-        if not self.loader.loadModel(aircraft_model_path):
-            aircraft_model_path = "models/box"
-            print(f"Warning: Aircraft model {aircraft_model_path} not found. Using default 'box'.")
-        
-        self.aircraft = self.physics_mgr.load_aircraft(aircraft_model_path, initial_pos, initial_hpr)
+        # We pass the LOD node path to the physics manager
+        self.aircraft = self.physics_mgr.load_aircraft(lod_np, aircraft_model_path, initial_pos, initial_hpr)
 
         # Initialize Aircraft Controller
         self.controller = AircraftController(self, self.physics_mgr, self.aircraft)
