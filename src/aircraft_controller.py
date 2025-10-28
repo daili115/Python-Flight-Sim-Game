@@ -39,17 +39,16 @@ class AircraftController:
 
     def setup_controls(self):
         # Aileron (Roll)
-        # Aileron (Roll)
-        self.base.accept("a", self.set_control, ["aileron", 1])
-        self.base.accept("a-up", self.set_control, ["aileron", 0])
-        self.base.accept("d", self.set_control, ["aileron", -1])
-        self.base.accept("d-up", self.set_control, ["aileron", 0])
+        self.base.accept("a", self.set_control_if_not_free_look, ["aileron", 1])
+        self.base.accept("a-up", self.set_control_if_not_free_look, ["aileron", 0])
+        self.base.accept("d", self.set_control_if_not_free_look, ["aileron", -1])
+        self.base.accept("d-up", self.set_control_if_not_free_look, ["aileron", 0])
 
         # Elevator (Pitch)
-        self.base.accept("w", self.set_control, ["elevator", 1]) # Nose down
-        self.base.accept("w-up", self.set_control, ["elevator", 0])
-        self.base.accept("s", self.set_control, ["elevator", -1]) # Nose up
-        self.base.accept("s-up", self.set_control, ["elevator", 0])
+        self.base.accept("w", self.set_control_if_not_free_look, ["elevator", 1]) # Nose down
+        self.base.accept("w-up", self.set_control_if_not_free_look, ["elevator", 0])
+        self.base.accept("s", self.set_control_if_not_free_look, ["elevator", -1]) # Nose up
+        self.base.accept("s-up", self.set_control_if_not_free_look, ["elevator", 0])
         
         # Rudder (Yaw)
         self.base.accept("q", self.set_control, ["rudder", -1])
@@ -70,40 +69,35 @@ class AircraftController:
         self.base.accept("mouse1", self.toggle_free_look, [True])
         self.base.accept("mouse1-up", self.toggle_free_look, [False])
         
-        # Add keys for free-look movement (forward/backward/up/down)
+        # Free-look movement controls (W, S, A, D, Space, Z)
         self.base.accept("space", self.set_control, ["free_up", 1])
         self.base.accept("space-up", self.set_control, ["free_up", 0])
         self.base.accept("z", self.set_control, ["free_down", 1])
         self.base.accept("z-up", self.set_control, ["free_down", 0])
-        
-        self.input_states['free_up'] = 0
-        self.input_states['free_down'] = 0
-        self.input_states['free_forward'] = 0
-        self.input_states['free_backward'] = 0
-        self.input_states['free_left'] = 0
-        self.input_states['free_right'] = 0
-        
-        # Re-map WASD for free-look when active
-        self.base.accept("w", self.set_control, ["free_forward", 1])
+        self.base.accept("w-repeat", self.set_control, ["free_forward", 1])
         self.base.accept("w-up", self.set_control, ["free_forward", 0])
-        self.base.accept("s", self.set_control, ["free_backward", 1])
+        self.base.accept("s-repeat", self.set_control, ["free_backward", 1])
         self.base.accept("s-up", self.set_control, ["free_backward", 0])
-        self.base.accept("a", self.set_control, ["free_left", 1])
+        self.base.accept("a-repeat", self.set_control, ["free_left", 1])
         self.base.accept("a-up", self.set_control, ["free_left", 0])
-        self.base.accept("d", self.set_control, ["free_right", 1])
-        se        self.base.accept("v", self.toggle_view)
+        self.base.accept("d-repeat", self.set_control, ["free_right", 1])
+        self.base.accept("d-up", self.set_control, ["free_right", 0])
 
         # State flags for continuous input
         self.input_states = {
             'aileron': 0, 'elevator': 0, 'rudder': 0,
             'throttle_input': 0, # 1 for up, -1 for down, 0 for none
             'free_up': 0, 'free_down': 0, 'free_forward': 0, 'free_backward': 0, 'free_left': 0, 'free_right': 0
-        }ne
         }
 
     def set_control(self, control_name, value):
         """Sets the flag for continuous control input."""
         self.input_states[control_name] = value
+
+    def set_control_if_not_free_look(self, control_name, value):
+        """Sets the flag for flight control input only if not in free-look mode."""
+        if self.view_mode != 3:
+            self.input_states[control_name] = value
 
     def set_throttle_input(self, value):
         """Sets the flag for continuous throttle input."""
@@ -144,9 +138,13 @@ class AircraftController:
             # Entering free-look
             pos, quat, _ = self.physics_mgr.get_aircraft_state()
             if pos is not None:
-                self.base.camera.setPos(pos + LVector3(0, -50, 10)) # Start at a similar third-person view
+                # Set camera to a position behind the aircraft, but not directly following
+                self.base.camera.setPos(pos + quat.xform(LVector3(0, -50, 10))) 
                 self.base.camera.lookAt(self.aircraft_np)
                 self.free_look_h, self.free_look_p, self.free_look_r = self.base.camera.getHpr()
+                self.base.disableMouse() # Ensure mouse is disabled for Panda3D's default camera control
+        else:
+            self.base.disableMouse() # Ensure mouse is disabled for Panda3D's default camera control
         
         print(f"View mode toggled to: {['Third-person', 'First-person', 'Free-look'][self.view_mode - 1]}")
 
@@ -190,7 +188,12 @@ class AircraftController:
             
             # Set camera orientation to match the aircraft's orientation
             self.base.camera.setPos(cockpit_pos)
-            self.base.camera.setQuat(Quat(quat.getR(), quat.getI(), quat.getJ(), quat.getK()))
+            # Quat.getQuat() returns (r, i, j, k) where r is the real part.
+            # Panda3D's Quat constructor takes (r, i, j, k)
+            self.base.camera.setQuat(quat)
+
+            # A small, subtle camera shake could enhance the feeling of speed/vibration
+            # Not implemented for simplicity, but a good future enhancement.
 
         elif self.view_mode == 3:
             # Free-look view
@@ -244,9 +247,8 @@ class AircraftController:
                 
             # If entering free-look, set camera position to current aircraft position
             if task.time == 0: # First time running this view mode
-                self.base.camera.setPos(pos + LVector3(0, -50, 10)) # Start at a similar third-person view
-                self.base.camera.lookAt(self.aircraft_np)
-                self.free_look_h, self.free_look_p, self.free_look_r = self.base.camera.getHpr()
+                # The initial position logic is now in toggle_view, so this is not strictly needed.
+                pass
 
         return Task.cont
 

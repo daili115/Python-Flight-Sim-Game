@@ -78,3 +78,40 @@ class GameManager:
         }
         return status
 
+
+    def check_for_crash(self, aircraft_pos: LPoint3):
+        """
+        Checks for a simple ground crash (altitude < 0) or a stall/low-speed crash.
+        """
+        if aircraft_pos is None:
+            return
+
+        # Simple Ground Collision (Z < 0)
+        if aircraft_pos.z < 0.5: # 0.5m buffer for the aircraft's size
+            print("CRASH! Ground collision detected.")
+            self.reset_game_state()
+            return
+
+        # Optional: Check for stall/low-speed crash (needs velocity/AoA from physics_mgr)
+        # For now, we only implement the ground collision.
+
+    def reset_game_state(self):
+        """
+        Resets the aircraft to the initial position and resets the game state.
+        """
+        print("Game state reset.")
+        # Stop the game loop temporarily
+        self.base.taskMgr.remove("GameLoopTask")
+
+        # Reset aircraft position and velocity (Assuming initial pos is 0, 0, 100)
+        initial_pos = LPoint3(0, 0, 100)
+        initial_hpr = LVector3(0, 0, 0)
+        self.physics_mgr.reset_aircraft(initial_pos, initial_hpr)
+        
+        # Reset game variables
+        self.score = 0
+        self.current_checkpoint_index = 0
+        self.set_next_checkpoint()
+        
+        # Restart the game loop
+        self.base.taskMgr.add(self.game_loop, "GameLoopTask")

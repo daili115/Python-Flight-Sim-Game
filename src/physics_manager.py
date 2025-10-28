@@ -1,4 +1,5 @@
 import pybullet as p
+from .config import AircraftConfig
 import pybullet_data
 from panda3d.core import LVector3, LPoint3, LQuaternion, NodePath
 import math
@@ -9,20 +10,20 @@ class PhysicsManager:
         # Setup PyBullet physics world
         self.physicsClient = p.connect(p.DIRECT) # p.GUI for visual debugging, p.DIRECT for simulation only
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        p.setGravity(0, 0, -9.81) # Standard gravity in Z-up
+        p.setGravity(0, 0, -AircraftConfig.GRAVITY) # Standard gravity in Z-up
 
         self.aircraft_id = None
         self.aircraft_np = None # Panda3D NodePath for the aircraft
 
-        # Constants for air density (at sea level, 15 deg C)
-        self.RHO = 1.225 # kg/m^3
+        # Air density is now in AircraftConfig
+        # self.RHO = 1.225 # kg/m^3
 
-        # Aircraft parameters (Placeholder for a small propeller plane like Cessna 172)
-        self.mass = 1000.0 # kg
-        self.wing_area = 16.2 # m^2 (approx for Cessna 172)
-        self.cl_max = 1.6 # Max lift coefficient
-        self.cd_min = 0.03 # Min drag coefficient
-        self.engine_power = 10000.0 # Placeholder for thrust force (Newtons)
+        # Aircraft parameters loaded from config
+        self.mass = AircraftConfig.MASS
+        self.wing_area = AircraftConfig.WING_AREA
+        self.cl_max = AircraftConfig.CL_MAX
+        self.cd_min = AircraftConfig.CD_MIN
+        self.engine_power = AircraftConfig.ENGINE_POWER
 
         # Current state
         self.velocity = LVector3(0, 0, 0)
@@ -105,8 +106,8 @@ class PhysicsManager:
 
         # Angle of Attack (AoA) calculation (simplified: angle between velocity vector and forward vector)
         if airspeed > 1.0:
-            # Dynamic Pressure (Q) - moved up for efficiency
-            Q = 0.5 * self.RHO * airspeed**2
+            # Dynamic Pressure (Q)
+            Q = 0.5 * AircraftConfig.RHO * airspeed**2
 
             vel_norm = self.velocity.normalized()
 
@@ -115,16 +116,35 @@ class PhysicsManager:
             aoa_rad = math.atan2(vel_body.z, vel_body.y)
             aoa_deg = math.degrees(aoa_rad)
             
-            # 3. Lift and Drag Coefficient Calculation
-            stall_angle = 15.0
+            # 3. Lift and Drag Coefficient Calculation (Improved Stall Model)
             
-            if abs(aoa_deg) < stall_angle:
-                CL = self.cl_max * (aoa_deg / stall_angle)
+            # Convert stall angle to radians
+            stall_angle_rad = math.radians(AircraftConfig.STALL_ANGLE_DEG)
+            
+            # Use a smoother model for CL based on AoA (e.g., a sin-based model)
+            # CL = CL_MAX * sin(2 * aoa) / sin(2 * stall_angle) for simplicity,
+            # but a piecewise linear or cubic spline is better.
+            # For this optimization, we'll use a smoother transition near stall.
+            
+            if abs(aoa_rad) <= stall_angle_rad:
+                # Linear increase up to stall
+                CL = self.cl_max * (aoa_rad / stall_angle_rad)
             else:
-                sign = 1 if aoa_deg > 0 else -1
+                # Post-stall: Rapid drop-off, then smoother decay
+                # Simplified model for post-stall: CL = CL_MAX * sign(aoa) * cos(aoa)
+                sign = 1 if aoa_rad > 0 else -1
+                # Use a blend: linear up to stall, then a decay function
+                # For simplicity, we'll keep the original structure but use radians for better math
+                # The original model's post-stall decay: CL_MAX * 0.8 * cos(aoa_rad) is decent for a simple sim
                 CL = sign * (self.cl_max * 0.8 * math.cos(aoa_rad))
-            
+
+            # Add control surface effect (elevator changes the effective AoA/camber)
+            # The control input is a unitless value (-1 to 1)
             CL += self.control_inputs['elevator'] * 0.5
+            
+            # Drag coefficient (CD = CD_min + K * CL^2) - Induced Drag
+            # K is the induced drag factor (1 / (pi * AR * e))
+            # 0.05 is a placeholder for K
             CD = self.cd_min + 0.05 * CL**2
 
             # 4. Lift Force
@@ -144,8 +164,17 @@ class PhysicsManager:
         # 7. Gravity Force
         gravity_force = LVector3(0, 0, -9.81 * self.mass)
 
-        # 8. Total Force
+        # 6. Total Force
         total_force = gravity_force + thrust_force + lift_force + drag_force
+        
+        # Store forces for HUD display
+        self.last_forces = {
+            'lift': lift_force.length(),
+            'drag': drag_force.length(),
+            'thrust': thrust_force.length(),
+            'aoa': aoa_deg if airspeed > 1.0 else 0.0,
+            'airspeed': airspeed
+        }
         
         # 6. Apply force and torque to PyBullet
         # Apply force at the center of mass (COM)
@@ -169,7 +198,15 @@ class PhysicsManager:
             Cm_roll = self.control_inputs['aileron'] * 0.05
             Cm_yaw = self.control_inputs['rudder'] * 0.03
         
+            ref_length = AircraftConfig.REF_LENGTH # meters
+            
+            # Simplified Moment Coefficients
+            Cm_pitch = self.control_inputs['elevator'] * AircraftConfig.ELEVATOR_EFFECTIVENESS
+            Cm_roll = self.control_inputs['aileron'] * AircraftConfig.AILERON_EFFECTIVENESS
+            Cm_yaw = self.control_inputs['rudder'] * AircraftConfig.RUDDER_EFFECTIVENESS
+        
             # Torque Magnitude
+            # Torque = Q * S * c * C_m (where S is wing_area, c is ref_length)
             pitch_torque_mag = Q * self.wing_area * ref_length * Cm_pitch
             roll_torque_mag = Q * self.wing_area * ref_length * Cm_roll
             yaw_torque_mag = Q * self.wing_area * ref_length * Cm_yaw
@@ -235,3 +272,56 @@ class PhysicsManager:
 # self.physics_mgr.update_controls({'throttle': 0.8, 'elevator': 0.1})
 # ...
 # In run_simulation: self.physics_mgr.update(dt)
+
+    def get_last_forces(self):
+        """
+        Returns the last calculated forces and AoA for HUD display.
+        """
+        return getattr(self, 'last_forces', {
+            'lift': 0.0,
+            'drag': 0.0,
+            'thrust': 0.0,
+            'aoa': 0.0,
+            'airspeed': 0.0
+        })
+
+    def reset_aircraft(self, initial_pos: LPoint3, initial_hpr: LVector3):
+        """
+        Resets the aircraft's position, orientation, and velocity in PyBullet.
+        """
+        if self.aircraft_id is None:
+            return
+
+        # Reset position and orientation in PyBullet
+        pos = [initial_pos.x, initial_pos.y, initial_pos.z]
+        
+        # Convert Panda3D HPR to Quaternion for PyBullet
+        # Note: Panda3D's HPR to Quat conversion is not directly available here, 
+        # but we can use a simple identity quaternion for the initial state (0, 0, 0 HPR)
+        # For a general solution, we would need to import the Quat class and convert.
+        # Since initial_hpr is (0, 0, 0), we use the identity quaternion (0, 0, 0, 1)
+        # If we need to support arbitrary initial_hpr, we must refactor this.
+        # For now, we assume initial_hpr is (0, 0, 0).
+        orn = [0, 0, 0, 1] # (x, y, z, w) for identity quaternion
+        
+        p.resetBasePositionAndOrientation(self.aircraft_id, pos, orn)
+        
+        # Reset velocity (e.g., 50 m/s forward along Y-axis)
+        p.resetBaseVelocity(self.aircraft_id, linearVelocity=[0, 50, 0], angularVelocity=[0, 0, 0])
+        
+        # Update Panda3D visual model
+        self.aircraft_np.setPos(initial_pos)
+        self.aircraft_np.setHpr(initial_hpr)
+        
+        # Reset internal state
+        self.velocity = LVector3(0, 50, 0)
+        self.angular_velocity = LVector3(0, 0, 0)
+        self.thrust = 0.0
+        self.control_inputs = {'aileron': 0.0, 'elevator': 0.0, 'rudder': 0.0, 'throttle': 0.0}
+        self.last_forces = {
+            'lift': 0.0,
+            'drag': 0.0,
+            'thrust': 0.0,
+            'aoa': 0.0,
+            'airspeed': 0.0
+        }

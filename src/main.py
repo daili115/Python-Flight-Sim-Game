@@ -2,6 +2,7 @@ from direct.showbase.ShowBase import ShowBase
 from panda3d.core import LPoint3, LVector3, CullFaceAttrib, TextNode
 from direct.gui.OnscreenText import OnscreenText
 from physics_manager import PhysicsManager
+from .config import AircraftConfig
 from aircraft_controller import AircraftController
 from game_manager import GameManager
 
@@ -76,6 +77,9 @@ class FlightSim(ShowBase):
                                      align=TextNode.ALeft, fg=(1, 1, 1, 1), shadow=(0, 0, 0, 1))
 
         # Add HUD update task
+        # Start the physics simulation task
+        self.taskMgr.add(self.run_simulation, "PhysicsSimulationTask", priority=0) 
+        # Add HUD update task
         self.taskMgr.add(self.update_hud, "UpdateHUDTask")
 
     def setup_lighting(self):
@@ -118,26 +122,30 @@ class FlightSim(ShowBase):
 
         # The background color is set in __init__ for the sky (no texture needed for now)
 
-    def run_simulation(self, task):
-        # This function will be the main game loop for physics and updates
-        dt = self.globalClock.getDt()
-        
-        # Physics update
-        if self.physics_mgr:
-            self.physics_mgr.update(dt)
-            
-        # Sound update
-        if self.engine_sound:
-            # Adjust pitch and volume based on throttle (or speed for more realism)
-            throttle_norm = self.controller.throttle
-            self.engine_sound.setVolume(0.3 + throttle_norm * 0.7) # Volume 0.3 to 1.0
-            self.engine_sound.setPlayRate(1.0 + throttle_norm * 0.5) # Pitch 1.0 to 1.5
-        
-        return task.cont
-
-    def update_hud(self, task):
-        if self.physics_mgr and self.controller:
-            pos, quat, linear_vel = self.physics_mgr.get_aircraft_state()
+	    def run_simulation(self, task):
+	        # This function will be the main game loop for physics and updates
+	        dt = self.globalClock.getDt()
+	        
+	        # Physics update
+	        if self.physics_mgr:
+	            self.physics_mgr.update(dt)
+	            
+	        # Sound update
+	        if self.engine_sound:
+	            # Adjust pitch and volume based on throttle (or speed for more realism)
+	            throttle_norm = self.controller.throttle
+	            self.engine_sound.setVolume(0.3 + throttle_norm * 0.7) # Volume 0.3 to 1.0
+	            self.engine_sound.setPlayRate(1.0 + throttle_norm * 0.5) # Pitch 1.0 to 1.5
+	        
+	        # Check for crash/landing
+	        self.game_mgr.check_for_crash(self.physics_mgr.get_aircraft_state()[0])
+	        
+	        return task.cont
+	
+	    def update_hud(self, task):
+	        if self.physics_mgr and self.controller:
+	            pos, quat, linear_vel = self.physics_mgr.get_aircraft_state()
+	            last_forces = self.physics_mgr.get_last_forces()
             
             if pos is not None:
                 # Calculate speed in km/h
@@ -150,24 +158,29 @@ class FlightSim(ShowBase):
                 # Throttle
                 throttle = self.controller.throttle * 100
                 
-                # Angle of Attack (AoA) - Need to get from physics_manager (for now, use a placeholder)
-                # In a real scenario, we would expose AoA from physics_manager
-                
-                game_status = self.game_mgr.get_game_status()
-                
-                hud_text = f"Speed: {speed_kph:.1f} km/h\n"
-                hud_text += f"Altitude: {altitude:.1f} m\n"
-                hud_text += f"Throttle: {throttle:.0f}%\n"
-                hud_text += f"Score: {game_status['score']}\n"
-                hud_text += f"Mission: {game_status['current_checkpoint']}/{game_status['total_checkpoints']} ({game_status['mission_status']})\n"
-                hud_text += f"View: {['Third-person', 'First-person', 'Free-look'][self.controller.view_mode - 1]}"
+                # Angle of Attack (AoA)
+	                aoa = last_forces['aoa']
+	                
+	                # Forces
+	                lift = last_forces['lift']
+	                drag = last_forces['drag']
+	                thrust = last_forces['thrust']
+	                
+	                game_status = self.game_mgr.get_game_status()
+	                
+	                hud_text = f"Speed: {speed_kph:.1f} km/h\n"
+	                hud_text += f"Altitude: {altitude:.1f} m\n"
+	                hud_text += f"Throttle: {throttle:.0f}%\n"
+	                hud_text += f"AoA: {aoa:.1f}°\n"
+	                hud_text += f"Lift: {lift/1000:.1f} kN | Drag: {drag/1000:.1f} kN | Thrust: {thrust/1000:.1f} kN\n"
+	                hud_text += f"Score: {game_status['score']}\n"
+	                hud_text += f"Mission: {game_status['current_checkpoint']}/{game_status['total_checkpoints']} ({game_status['mission_status']})\n"
+	                hud_text += f"View: {['Third-person', 'First-person', 'Free-look'][self.controller.view_mode - 1]}"
                 
                 self.hud_text.setText(hud_text)
 
         return task.cont
 
-if __name__ == '__main__':
-    app = FlightSim()
-    # The physics update is critical and should run every frame
-    app.taskMgr.add(app.run_simulation, "PhysicsSimulationTask", priority=0) 
-    app.run()
+	if __name__ == '__main__':
+	    app = FlightSim()
+	    app.run()
